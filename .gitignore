@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.turbo/
+*.local
+.env
+.env.*
+fine-tuning/models/
+fine-tuning/.venv/
+fine-tuning/data/
+fine-tuning/outputs/
+public/models/
+*.onnx
+*.traineddata
+*.pyc
+__pycache__/
+.DS_Store
+.idea/

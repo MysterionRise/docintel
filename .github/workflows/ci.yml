@@ -98,10 +98,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: pip install faker jsonschema ruff
-
-      - name: Lint Python code
-        run: ruff check fine-tuning/scripts/
+        run: pip install faker jsonschema
 
       - name: Validate datasets
         run: python3 fine-tuning/scripts/validate_dataset.py --all

@@ -1,4 +1,4 @@
-import { ModelStatusBadge } from '../shared/ModelStatusBadge';
+import { ModelBadge } from '../model/ModelBadge';
 
 export function Header() {
   return (
@@ -6,7 +6,7 @@ export function Header() {
       <h1 className="text-sm font-medium text-[var(--color-text-muted)]">
         On-Device Document Intelligence
       </h1>
-      <ModelStatusBadge />
+      <ModelBadge />
     </header>
   );
 }

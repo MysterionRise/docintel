@@ -6,6 +6,7 @@ import { MedicalPage } from './pages/MedicalPage';
 import { FinancialPage } from './pages/FinancialPage';
 import { LegalPage } from './pages/LegalPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { ModelTestPage } from './components/model/ModelTestPage';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="financial" element={<FinancialPage />} />
           <Route path="legal" element={<LegalPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="model-test" element={<ModelTestPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

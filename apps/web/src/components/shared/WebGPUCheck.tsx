@@ -1,39 +1,42 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { Cpu } from 'lucide-react';
+import { detectCapabilities } from '@docintel/ai-engine';
 
-type GPUStatus = 'checking' | 'available' | 'unavailable';
+type GPUStatus = 'checking' | 'available' | 'fallback';
 
 export function WebGPUCheck({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<GPUStatus>('checking');
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      if (!navigator.gpu) {
-        setStatus('unavailable');
-        return;
-      }
-      const adapter = await navigator.gpu.requestAdapter();
-      setStatus(adapter ? 'available' : 'unavailable');
-    })();
+    detectCapabilities().then((cap) => {
+      setStatus(cap.hasWebGPU ? 'available' : 'fallback');
+    });
   }, []);
 
   if (status === 'checking') return null;
 
-  if (status === 'unavailable') {
-    return (
-      <div className="mx-auto max-w-lg rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-6 text-center">
-        <AlertTriangle size={40} className="mx-auto mb-3 text-yellow-400" />
-        <h3 className="mb-2 text-lg font-semibold text-yellow-300">WebGPU Not Available</h3>
-        <p className="text-sm text-yellow-200/80">
-          This app requires WebGPU for on-device AI inference. Please use a supported browser:
-        </p>
-        <ul className="mt-3 space-y-1 text-sm text-yellow-200/60">
-          <li>Chrome 113+ or Edge 113+</li>
-          <li>Chrome Canary with WebGPU flag enabled</li>
-        </ul>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
+  return (
+    <>
+      {status === 'fallback' && !dismissed && (
+        <div className="mx-4 mt-4 flex items-start gap-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4">
+          <Cpu size={20} className="mt-0.5 shrink-0 text-yellow-400" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-yellow-300">WebGPU Not Available</h3>
+            <p className="mt-1 text-xs text-yellow-200/80">
+              AI inference will use CPU (WASM) mode, which is slower but fully functional.
+              For better performance, use Chrome 113+ or Edge 113+.
+            </p>
+          </div>
+          <button
+            onClick={() => setDismissed(true)}
+            className="shrink-0 text-xs text-yellow-400/60 hover:text-yellow-400"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {children}
+    </>
+  );
 }

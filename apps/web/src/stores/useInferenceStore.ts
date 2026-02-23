@@ -1,51 +1,92 @@
 import { create } from 'zustand';
-import type { InferenceStatus, ChatMessage, ModelDownloadProgress, Domain, SearchResult } from '@docintel/ai-engine';
+import type { ChatMessage, Domain, SearchResult } from '@docintel/ai-engine';
 import { DexieStorageAdapter } from '../lib/dexie-storage';
+import { getModelManager, useModelStore } from '../hooks/useModel';
+import { db } from '../lib/db';
 
 const storage = new DexieStorageAdapter();
 
-let worker: Worker | null = null;
-
-function getWorker(): Worker {
-  if (!worker) {
-    worker = new Worker(new URL('@docintel/ai-engine/workers/inference', import.meta.url), {
-      type: 'module',
-    });
-    worker.onmessage = handleWorkerMessage;
-    worker.onerror = (e) => {
-      useInferenceStore.setState({ error: String(e.message), status: 'error' });
-    };
-  }
-  return worker;
-}
-
 interface InferenceState {
-  status: InferenceStatus;
-  downloadProgress: ModelDownloadProgress | null;
   messages: ChatMessage[];
   currentStreamText: string;
-  error: string | null;
-  loadModel: () => void;
+  currentDocumentId: number | null;
   sendMessage: (content: string, options?: { systemPrompt?: string; domain?: Domain; documentId?: number }) => void;
   abortGeneration: () => void;
   clearMessages: () => void;
+  loadMessages: (documentId: number | null) => Promise<void>;
+}
+
+// Install callbacks on the model manager for token streaming
+let callbacksInstalled = false;
+
+function ensureCallbacks() {
+  if (callbacksInstalled) return;
+  callbacksInstalled = true;
+
+  const manager = getModelManager();
+  manager.setCallbacks({
+    onStatusChange: (status) => {
+      useModelStore.getState().setStatus(status);
+    },
+    onDownloadProgress: (progress) => {
+      useModelStore.getState().setDownloadProgress(progress);
+    },
+    onToken: (text) => {
+      useInferenceStore.setState((s) => ({ currentStreamText: s.currentStreamText + text }));
+    },
+    onGenerationDone: (stats) => {
+      useModelStore.getState().setGenerationStats(stats);
+      const state = useInferenceStore.getState();
+      const streamText = state.currentStreamText;
+      if (streamText) {
+        const assistantMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: streamText,
+          timestamp: Date.now(),
+        };
+        useInferenceStore.setState((s) => ({
+          messages: [...s.messages, assistantMsg],
+          currentStreamText: '',
+        }));
+        // Persist the assistant message
+        const docId = state.currentDocumentId;
+        db.chatMessages.add({ ...assistantMsg, documentId: docId });
+      }
+    },
+    onError: (error) => {
+      useModelStore.getState().setError(error);
+    },
+  });
 }
 
 export const useInferenceStore = create<InferenceState>()((set, get) => ({
-  status: 'idle',
-  downloadProgress: null,
   messages: [],
   currentStreamText: '',
-  error: null,
+  currentDocumentId: null,
 
-  loadModel: () => {
-    set({ status: 'loading_tokenizer', error: null });
-    getWorker().postMessage({ type: 'load' });
+  loadMessages: async (documentId: number | null) => {
+    if (documentId === get().currentDocumentId && get().messages.length > 0) return;
+    set({ currentDocumentId: documentId, currentStreamText: '' });
+    if (documentId == null) {
+      set({ messages: [] });
+      return;
+    }
+    const stored = await db.chatMessages
+      .where('documentId')
+      .equals(documentId)
+      .sortBy('timestamp');
+    const messages: ChatMessage[] = stored.map(({ id, role, content, timestamp, citations }) => ({
+      id, role, content, timestamp, ...(citations && { citations }),
+    }));
+    set({ messages });
   },
 
   sendMessage: async (content: string, options) => {
-    const state = get();
-    if (state.status !== 'ready') return;
+    ensureCallbacks();
+
+    const status = useModelStore.getState().status;
+    if (status !== 'ready') return;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
@@ -56,11 +97,13 @@ export const useInferenceStore = create<InferenceState>()((set, get) => ({
 
     set((s) => ({ messages: [...s.messages, userMsg], currentStreamText: '' }));
 
-    // Build the messages array for the worker
+    // Persist user message
+    const docId = get().currentDocumentId;
+    db.chatMessages.add({ ...userMsg, documentId: docId });
+
     const chatMessages: Array<{ role: string; content: string }> = [];
     let citations: SearchResult[] | undefined;
 
-    // If domain is provided, use RAG to augment the prompt
     if (options?.domain) {
       try {
         const { queryRAG } = await import('@docintel/ai-engine');
@@ -68,7 +111,6 @@ export const useInferenceStore = create<InferenceState>()((set, get) => ({
         chatMessages.push({ role: 'system', content: result.prompt });
         citations = result.sources;
       } catch {
-        // Fallback to plain system prompt if RAG fails
         if (options.systemPrompt) {
           chatMessages.push({ role: 'system', content: options.systemPrompt });
         }
@@ -77,13 +119,11 @@ export const useInferenceStore = create<InferenceState>()((set, get) => ({
       chatMessages.push({ role: 'system', content: options.systemPrompt });
     }
 
-    // Add conversation history (exclude the just-added user message since RAG prompt already contains the question)
     for (const m of get().messages.slice(0, -1)) {
       chatMessages.push({ role: m.role, content: m.content });
     }
     chatMessages.push({ role: 'user', content });
 
-    // Store citations on the user message for later display on the assistant response
     if (citations?.length) {
       set((s) => {
         const msgs = [...s.messages];
@@ -104,43 +144,19 @@ export const useInferenceStore = create<InferenceState>()((set, get) => ({
       });
     }
 
-    getWorker().postMessage({ type: 'generate', messages: chatMessages });
+    getModelManager().generate(chatMessages);
   },
 
   abortGeneration: () => {
-    getWorker().postMessage({ type: 'abort' });
+    ensureCallbacks();
+    getModelManager().abort();
   },
 
-  clearMessages: () => set({ messages: [], currentStreamText: '' }),
-}));
-
-function handleWorkerMessage(e: MessageEvent) {
-  const { type } = e.data;
-  if (type === 'status') {
-    useInferenceStore.setState({ status: e.data.status, error: null });
-  } else if (type === 'download_progress') {
-    useInferenceStore.setState({
-      status: 'downloading',
-      downloadProgress: { name: e.data.name, loaded: e.data.loaded, total: e.data.total },
-    });
-  } else if (type === 'token') {
-    useInferenceStore.setState((s) => ({ currentStreamText: s.currentStreamText + e.data.text }));
-  } else if (type === 'done') {
-    const state = useInferenceStore.getState();
-    const streamText = state.currentStreamText;
-    if (streamText) {
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: streamText,
-        timestamp: Date.now(),
-      };
-      useInferenceStore.setState((s) => ({
-        messages: [...s.messages, assistantMsg],
-        currentStreamText: '',
-      }));
+  clearMessages: async () => {
+    const docId = get().currentDocumentId;
+    set({ messages: [], currentStreamText: '' });
+    if (docId != null) {
+      await db.chatMessages.where('documentId').equals(docId).delete();
     }
-  } else if (type === 'error') {
-    useInferenceStore.setState({ error: e.data.error, status: 'error' });
-  }
-}
+  },
+}));

@@ -9,8 +9,9 @@
     "clean": "turbo clean && rm -rf node_modules"
   },
   "devDependencies": {
+    "prettier": "^3",
     "turbo": "^2",
-    "prettier": "^3"
+    "vitest": "^4.0.18"
   },
   "packageManager": "pnpm@9.15.0"
 }

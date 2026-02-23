@@ -1,6 +1,15 @@
 import type { Domain } from './index';
 
-export type { ParsedPDF, PageContent, ProcessingStatus } from '@docintel/document-parser';
+export type {
+  ParsedPDF,
+  PageContent,
+  ProcessingStatus,
+  ParsedDocument,
+  ParsedPage,
+  PDFMetadata,
+  TextItem,
+  TextChunk,
+} from '@docintel/document-parser';
 
 export interface DocDocument {
   id?: number;
@@ -27,4 +36,12 @@ export interface DocEmbedding {
   chunkId: number;
   documentId: number;
   vector: Float32Array;
+}
+
+export interface StoredPage {
+  id?: number;
+  documentId: number;
+  pageNumber: number;
+  text: string;
+  hasTextLayer: boolean;
 }

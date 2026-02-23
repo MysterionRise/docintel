@@ -1,37 +1,54 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Square, Loader2, AlertCircle, Download } from 'lucide-react';
-import { useInferenceStore } from '../../stores/useInferenceStore';
+import { Send, Square, Download, AlertCircle, Trash2, Database, FileText } from 'lucide-react';
+import { useModel } from '../../hooks/useModel';
+import { useDocumentChat } from '../../hooks/useDocumentChat';
+import type { RAGMode } from '../../hooks/useRAG';
 import { MessageBubble } from './MessageBubble';
 import { exportChatToDocx, downloadBlob } from '../../lib/exporters/docxExporter';
 import { exportChatToPdf } from '../../lib/exporters/pdfExporter';
 import { exportChatToXlsx } from '../../lib/exporters/xlsxExporter';
-import type { Domain } from '@docintel/ai-engine';
+import { ModelLoader } from '../model/ModelLoader';
+import { ContextIndicator } from '../chat/ContextIndicator';
+import { QuickActions } from '../chat/QuickActions';
+import { RetrievedContext } from '../chat/RetrievedContext';
+import { CitationPanel } from '../chat/CitationPanel';
 
 interface ChatPanelProps {
-  systemPrompt?: string;
   placeholder?: string;
-  domain?: Domain;
-  documentId?: number | null;
 }
 
-export function ChatPanel({ systemPrompt, placeholder = 'Ask about your documents...', domain, documentId }: ChatPanelProps) {
+const MODE_LABELS: Record<RAGMode, string> = {
+  auto: 'Auto',
+  simple: 'Simple',
+  rag: 'RAG',
+};
+
+export function ChatPanel({ placeholder = 'Ask about your documents...' }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const status = useInferenceStore((s) => s.status);
-  const messages = useInferenceStore((s) => s.messages);
-  const currentStreamText = useInferenceStore((s) => s.currentStreamText);
-  const error = useInferenceStore((s) => s.error);
-  const sendMessage = useInferenceStore((s) => s.sendMessage);
-  const abortGeneration = useInferenceStore((s) => s.abortGeneration);
-  const loadModel = useInferenceStore((s) => s.loadModel);
+  const { status, error, loadModel } = useModel();
+  const {
+    messages,
+    currentStreamText,
+    activeDocument,
+    contextInfo,
+    isGenerating,
+    isReady,
+    ragMode,
+    setRagMode,
+    lastRetrievalStats,
+    lastSources,
+    sendMessage,
+    sendQuickAction,
+    abortGeneration,
+    clearMessages,
+  } = useDocumentChat();
 
-  const isGenerating = status === 'generating';
-  const isReady = status === 'ready';
-  const isLoading = ['loading_tokenizer', 'loading_model', 'downloading'].includes(status);
   const isError = status === 'error';
 
-  const title = domain ? `DocIntel ${domain} Analysis` : 'DocIntel Chat';
+  const title = activeDocument?.domain ? `DocIntel ${activeDocument.domain} Analysis` : 'DocIntel Chat';
 
   const handleExport = async (format: 'docx' | 'pdf' | 'xlsx') => {
     setShowExportMenu(false);
@@ -55,39 +72,101 @@ export function ChatPanel({ systemPrompt, placeholder = 'Ask about your document
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || !isReady) return;
-    sendMessage(input.trim(), {
-      systemPrompt,
-      domain,
-      documentId: documentId ?? undefined,
-    });
+    setSelectedSourceIndex(null);
+    sendMessage(input.trim());
     setInput('');
   };
 
+  const cycleMode = () => {
+    const modes: RAGMode[] = ['auto', 'simple', 'rag'];
+    const idx = modes.indexOf(ragMode);
+    setRagMode(modes[(idx + 1) % modes.length]);
+  };
+
   return (
-    <div className="flex h-full flex-col">
-      {messages.length > 0 && (
-        <div className="flex items-center justify-end border-b border-[var(--color-border)] px-3 py-1.5">
-          <div className="relative">
-            <button
-              onClick={() => setShowExportMenu(!showExportMenu)}
-              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
-            >
-              <Download size={14} /> Export
-            </button>
-            {showExportMenu && (
-              <div className="absolute right-0 top-full z-10 mt-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
-                <button onClick={() => handleExport('docx')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">DOCX</button>
-                <button onClick={() => handleExport('pdf')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">PDF</button>
-                <button onClick={() => handleExport('xlsx')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">XLSX</button>
+    <div className="relative flex h-full flex-col">
+      {/* Context indicator + toolbar */}
+      <div className="space-y-0 border-b border-[var(--color-border)]">
+        {/* Context indicator */}
+        {activeDocument && contextInfo && (
+          <div className="px-3 pt-2">
+            <ContextIndicator
+              includedPages={contextInfo.includedPages}
+              totalPages={contextInfo.totalPages}
+              truncated={contextInfo.truncated}
+              documentName={activeDocument.name}
+            />
+          </div>
+        )}
+
+        {/* Mode + export + clear toolbar */}
+        <div className="flex items-center justify-between px-3 py-1.5">
+          <div className="flex items-center gap-2">
+            {messages.length > 0 && (
+              <button
+                onClick={clearMessages}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+              >
+                <Trash2 size={12} /> Clear
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {/* RAG mode toggle */}
+            {activeDocument && (
+              <button
+                onClick={cycleMode}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                title={`Mode: ${MODE_LABELS[ragMode]}${contextInfo?.effectiveMode ? ` (using ${contextInfo.effectiveMode})` : ''}`}
+              >
+                {contextInfo?.effectiveMode === 'rag' ? (
+                  <Database size={12} className="text-[var(--color-primary)]" />
+                ) : (
+                  <FileText size={12} />
+                )}
+                {MODE_LABELS[ragMode]}
+              </button>
+            )}
+            {messages.length > 0 && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                  className="flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text)]"
+                >
+                  <Download size={14} /> Export
+                </button>
+                {showExportMenu && (
+                  <div className="absolute right-0 top-full z-10 mt-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] py-1 shadow-lg">
+                    <button onClick={() => handleExport('docx')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">DOCX</button>
+                    <button onClick={() => handleExport('pdf')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">PDF</button>
+                    <button onClick={() => handleExport('xlsx')} className="block w-full px-4 py-1.5 text-left text-xs hover:bg-[var(--color-surface)]">XLSX</button>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
-      )}
+      </div>
+
+      {/* Messages */}
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-4">
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            sources={lastSources}
+            onSourceClick={setSelectedSourceIndex}
+          />
         ))}
+
+        {/* Retrieved context after the last assistant message */}
+        {lastSources.length > 0 && lastRetrievalStats && messages.length > 0 && !isGenerating && !currentStreamText && (
+          <RetrievedContext
+            sources={lastSources}
+            retrievalTimeMs={lastRetrievalStats.timeMs}
+          />
+        )}
+
         {currentStreamText && (
           <MessageBubble
             message={{
@@ -96,48 +175,50 @@ export function ChatPanel({ systemPrompt, placeholder = 'Ask about your document
               content: currentStreamText,
               timestamp: Date.now(),
             }}
+            sources={lastSources}
+            onSourceClick={setSelectedSourceIndex}
           />
         )}
         {messages.length === 0 && !currentStreamText && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--color-text-muted)]">
-            {status === 'idle' ? (
-              <button
-                onClick={loadModel}
-                className="rounded-lg bg-[var(--color-primary)] px-4 py-2 text-white transition-colors hover:bg-[var(--color-primary-dark)]"
-              >
-                Load AI Model
-              </button>
-            ) : isLoading ? (
-              <div className="flex items-center gap-2">
-                <Loader2 size={16} className="animate-spin" />
-                Loading model...
+          <div className="flex h-full flex-col items-center justify-center gap-4 text-sm text-[var(--color-text-muted)]">
+            {!isReady && !isGenerating ? (
+              <div className="w-full max-w-sm">
+                <ModelLoader />
               </div>
-            ) : isError ? (
-              <div className="flex flex-col items-center gap-2 text-red-400">
-                <AlertCircle size={24} />
-                <p className="text-center text-xs">{error}</p>
-                <button
-                  onClick={loadModel}
-                  className="mt-1 rounded-lg bg-red-500/20 px-3 py-1.5 text-xs hover:bg-red-500/30"
-                >
-                  Retry
-                </button>
+            ) : activeDocument ? (
+              <div className="w-full space-y-3 text-center">
+                <p>Ask a question about <span className="font-medium text-[var(--color-text)]">{activeDocument.name}</span></p>
+                {contextInfo?.effectiveMode === 'rag' && (
+                  <p className="text-xs text-[var(--color-primary)]">
+                    <Database size={10} className="mr-1 inline" />
+                    RAG mode — semantic search across chunks
+                  </p>
+                )}
+                <QuickActions onAction={sendQuickAction} disabled={!isReady} />
               </div>
             ) : (
-              'Send a message to start analyzing'
+              <p>Upload a document and start asking questions</p>
             )}
           </div>
         )}
-        {/* Show error inline if it occurs during generation */}
+        {/* Inline error */}
         {isError && messages.length > 0 && (
           <div className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">
             <AlertCircle size={14} />
             <span>{error}</span>
-            <button onClick={loadModel} className="ml-auto underline">Retry</button>
+            <button onClick={() => loadModel()} className="ml-auto underline">Retry</button>
           </div>
         )}
       </div>
 
+      {/* Quick actions above input when messages exist and document is active */}
+      {messages.length > 0 && activeDocument && isReady && !isGenerating && (
+        <div className="border-t border-[var(--color-border)] px-3 pt-2">
+          <QuickActions onAction={sendQuickAction} />
+        </div>
+      )}
+
+      {/* Input */}
       <form onSubmit={handleSubmit} className="border-t border-[var(--color-border)] p-3">
         <div className="flex items-center gap-2">
           <input
@@ -166,6 +247,15 @@ export function ChatPanel({ systemPrompt, placeholder = 'Ask about your document
           )}
         </div>
       </form>
+
+      {/* Citation side panel */}
+      {selectedSourceIndex != null && lastSources.length > 0 && (
+        <CitationPanel
+          sources={lastSources}
+          selectedSourceIndex={selectedSourceIndex}
+          onClose={() => setSelectedSourceIndex(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,12 +1,11 @@
 import { useCallback, useEffect } from 'react';
 import type { Domain } from '@docintel/ai-engine';
-import { getSystemPrompt } from '@docintel/ai-engine';
 import { useDocumentStore } from '../../stores/useDocumentStore';
-import { DocumentList } from '../documents/DocumentList';
+import { DocumentLibrary } from '../documents/DocumentLibrary';
 import { DocumentViewer } from '../documents/DocumentViewer';
 import { ChatPanel } from './ChatPanel';
 import { FileUploader } from './FileUploader';
-import { ProgressBar } from './ProgressBar';
+import { ProcessingProgress } from '../documents/ProcessingProgress';
 
 interface DomainPageLayoutProps {
   domain: Domain;
@@ -45,11 +44,16 @@ export function DomainPageLayout({ domain, title, children }: DomainPageLayoutPr
       <div className="flex w-64 shrink-0 flex-col gap-4 overflow-auto">
         <h2 className="text-lg font-bold">{title}</h2>
         <FileUploader onFiles={handleFiles} />
-        {processingStatus !== 'idle' && processingStatus !== 'done' && (
-          <ProgressBar progress={processingProgress} label={processingStatusText} />
+        {processingStatus !== 'idle' && (
+          <ProcessingProgress
+            status={processingStatus}
+            progress={processingProgress}
+            statusText={processingStatusText}
+          />
         )}
-        <DocumentList
+        <DocumentLibrary
           documents={documents}
+          selectedId={selectedDocumentId}
           onSelect={selectDocument}
           onDelete={deleteDocument}
         />
@@ -64,10 +68,7 @@ export function DomainPageLayout({ domain, title, children }: DomainPageLayoutPr
       {/* Right panel — chat */}
       <div className="flex w-80 shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
         <ChatPanel
-          systemPrompt={getSystemPrompt(domain)}
           placeholder={`Ask about your ${domain} documents...`}
-          domain={domain}
-          documentId={selectedDocumentId}
         />
       </div>
     </div>

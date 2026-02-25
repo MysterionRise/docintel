@@ -6,25 +6,37 @@ DocIntel is a browser-native document intelligence platform that uses WebGPU-acc
 ## Architecture
 - **Monorepo**: Turborepo + pnpm workspaces
 - **Frontend**: `apps/web` — React + Vite + TailwindCSS + Zustand
-- **AI Engine**: `packages/ai-engine` — RAG pipeline, embedding, inference workers, vector store
-- **Document Parser**: `packages/document-parser` — PDF parsing, chunking (pdfjs-dist)
-- **Fine-Tuning**: `fine-tuning/` — Python (Unsloth QLoRA), dataset curation, ONNX export
+- **AI Engine**: `packages/ai-engine` — RAG pipeline, embedding, inference workers, vector store, model manager, context manager, GPU monitor
+- **Document Parser**: `packages/document-parser` — PDF parsing, OCR, chunking (pdfjs-dist, tesseract.js)
+- **Fine-Tuning**: `fine-tuning/` — Python (Unsloth QLoRA), dataset curation, validation, ONNX export
 - **Shared Config**: `packages/tsconfig`
+- **Billing Worker**: `services/billing-worker` — Cloudflare Worker stub
 
 ## Key Patterns
 - **Source-level resolution**: Internal packages are imported as TypeScript source (no build step); Vite resolves them directly
 - **Web Workers**: Inference and embedding run in separate workers with typed message protocols (`InferenceWorkerInMessage`/`OutMessage`, `EmbeddingWorkerInMessage`/`OutMessage`)
-- **StorageAdapter**: `packages/ai-engine` uses a `StorageAdapter` interface to decouple from Dexie IndexedDB (defined in `apps/web/src/lib/db.ts`)
-- **Zustand stores**: `useModelStore`, `useInferenceStore`, `useEmbeddingStore`, `useDocumentStore` in `apps/web/src/stores/`
+- **StorageAdapter**: `packages/ai-engine` uses a `StorageAdapter` interface to decouple from Dexie IndexedDB (implemented by `DexieStorageAdapter` in `apps/web/src/lib/dexie-storage.ts`)
+- **Zustand stores**: `useModelStore`, `useInferenceStore`, `useEmbeddingStore`, `useDocumentStore`, `useAppStore`, `useLicenseStore` in `apps/web/src/stores/`
+- **Custom hooks**: `useModel`, `useInference`, `useEmbedding`, `useRAG`, `useDocumentChat` in `apps/web/src/hooks/`
 - **RAG pipeline**: query embedding → cosine similarity vector search → context construction → prompt building → LLM generation
-- **ShareGPT/ChatML format**: Fine-tuning datasets use `{"conversations": [{"role": "...", "content": "..."}]}` format
+- **ChatML format**: Fine-tuning datasets use `{"messages": [{"role": "...", "content": "..."}]}` format (must match `train_qlora.py`)
 
 ## Commands
-- **Build**: `pnpm turbo build` (from root)
+- **Build**: `pnpm turbo build`
 - **Dev**: `pnpm --filter @docintel/web dev`
-- **Test**: `pnpm --filter @docintel/ai-engine test` / `pnpm --filter @docintel/document-parser test`
+- **Test**: `pnpm turbo test` (228 tests: 85 ai-engine, 69 document-parser, 74 web)
+- **Test single package**: `pnpm --filter @docintel/ai-engine test`
+- **Type check**: `pnpm turbo type-check`
 - **Lint**: `pnpm turbo lint`
-- **Python (fine-tuning)**: `cd fine-tuning && pip install -e .`
+- **Validate datasets**: `python3 fine-tuning/scripts/validate_dataset.py --all`
+
+## CI/CD
+GitHub Actions (`.github/workflows/ci.yml`) runs 5 jobs on push/PR to master:
+1. **Build** — `pnpm turbo build`
+2. **Type Check** — `pnpm turbo type-check` (all packages)
+3. **Lint** — `pnpm turbo lint` (all packages)
+4. **Test** — `pnpm turbo test` (all packages)
+5. **Python Validation** — dataset validation across all 4 domains
 
 ## Completed Plans
 - PLAN-01: Turborepo monorepo migration
@@ -33,22 +45,21 @@ DocIntel is a browser-native document intelligence platform that uses WebGPU-acc
 - PLAN-04: Single-document Q&A chat interface
 - PLAN-05: Embedding engine & vector store
 - PLAN-06: RAG pipeline integration
-
-## Current Branch
-`feat/webgpu-inference` — all PLAN-01 through PLAN-06 work
+- PLAN-07: Dataset curation for fine-tuning (4 domains)
+- Quality sprint: bug fixes, 228 tests, CI/CD enhancement
 
 ## Domain Schemas (for fine-tuning datasets)
-Each domain has a JSON output schema the fine-tuned model should produce:
+JSON schemas live in `fine-tuning/schemas/`. Each domain has a JSON output schema the fine-tuned model should produce:
 - **Contracts**: document_type, parties, dates, key_clauses (with risk_level), obligations, summary
 - **Medical**: document_type, patient_info, diagnoses (ICD-10), medications, procedures, lab_results, follow_up, summary
 - **Financial**: document_type, issuer/recipient, line_items, totals, tax, account_numbers, payment_terms
 - **Legal**: document_type, relevance scoring, privilege classification, key_entities, dates, summary
 
 ## Fine-Tuning Data Format
-Training data lives in `fine-tuning/datasets/<domain>/` as JSON files with train/validation/test splits. Each example:
+Training data lives in `fine-tuning/datasets/<domain>/` as JSON files with train/validation/test splits (80/10/10). Each example:
 ```json
 {
-  "conversations": [
+  "messages": [
     {"role": "system", "content": "You are DocIntel, a <domain> analysis AI..."},
     {"role": "user", "content": "Analyze this document...\n\n<text>"},
     {"role": "assistant", "content": "<structured JSON output>"}
@@ -56,8 +67,13 @@ Training data lives in `fine-tuning/datasets/<domain>/` as JSON files with train
 }
 ```
 
+Dataset preparation scripts: `fine-tuning/scripts/prepare_{contracts,medical,financial,legal}.py`
+Shared utilities: `fine-tuning/scripts/shared.py`
+Validation: `fine-tuning/scripts/validate_dataset.py --all`
+
 ## Important Notes
 - TypeScript strict mode is on; unused variables/imports cause build failures
-- Tests use vitest (workspace root devDependency)
-- Python code follows ruff linting (line-length=100, py310 target)
+- Tests use vitest (workspace root devDependency); web tests use jsdom environment
+- Python requires `>=3.10`; ruff config in `fine-tuning/pyproject.toml` (line-length=100)
 - Never commit API keys, HuggingFace tokens, or PII to the repo
+- Training data format is ChatML (`"messages"` key), NOT ShareGPT (`"conversations"` key)
